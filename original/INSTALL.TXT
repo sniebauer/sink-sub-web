@@ -1,0 +1,7 @@
+How to install:
+---------------
+1. create a new directory, for instance, C:\SINKSUB
+2. copy the files SINKSUB.EXE, SINKSUB.HLP to the new directory
+3. copy the file BWCC.DLL to the \WINDOWS\SYSTEM directory
+4. add SINKSUB.EXE to a Windows program group
+5. GAME ON !

@@ -1,0 +1,17 @@
+{
+  "name": "sink-sub-web",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Browser port of SinkSub for Windows (Anders Wihlborg, 1993), built from the original game's extracted assets.",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "deploy": "npm run build && npx wrangler pages deploy dist"
+  },
+  "devDependencies": {
+    "typescript": "^5.6.3",
+    "vite": "^5.4.10"
+  }
+}
