@@ -74,6 +74,8 @@ class Game {
   // phase / ui
   phase: Phase = 'ready';
   phaseT = 0;
+  needStart = true; // a fresh game waits for the player; level changes auto-advance
+  isTouch = false;
   paused = false;
   muted = false;
   openMenu: string | null = null;
@@ -98,6 +100,13 @@ class Game {
     this.birds = [];
     this.plane = null;
     this.startLevel();
+    this.needStart = true; // wait for the player to begin the first level
+  }
+
+  beginPlay() {
+    this.phase = 'playing';
+    this.phaseT = 0;
+    this.needStart = false;
   }
 
   startLevel() {
@@ -111,6 +120,7 @@ class Game {
     this.spawnSubs();
     this.phase = 'ready';
     this.phaseT = 0;
+    this.needStart = false; // level changes/respawns auto-advance after a beat
     reportTitle(`Level ${this.level}`);
     play('levelStart');
   }
@@ -153,6 +163,10 @@ class Game {
   keydown(code: string) {
     if (this.overlay) { if (['Enter', 'Escape', 'Space'].includes(code)) this.overlay = null; return; }
     if (code === 'Escape') { this.openMenu = null; return; }
+    // Any gameplay key begins a waiting (fresh/ready) game.
+    const GAME_KEYS = ['ArrowLeft', 'ArrowRight', 'ArrowDown', 'KeyA', 'KeyD',
+      'KeyZ', 'KeyX', 'Comma', 'Period', 'Numpad1', 'Numpad3', 'Space', 'Enter', 'KeyN'];
+    if (this.phase === 'ready' && GAME_KEYS.includes(code)) this.beginPlay();
     switch (code) {
       case 'ArrowLeft': case 'KeyA': this.left = true; break;
       case 'ArrowRight': case 'KeyD': this.right = true; break;
@@ -163,7 +177,6 @@ class Game {
       case 'KeyM': this.muted = toggleMute(); break;
       case 'Enter': case 'KeyN':
         if (this.phase === 'over') this.startGame();
-        else if (this.phase === 'ready') { this.phase = 'playing'; this.phaseT = 0; }
         break;
     }
   }
@@ -199,7 +212,8 @@ class Game {
     this.updateBirds();
 
     if (this.phase === 'ready') {
-      if (this.phaseT > 28) { this.phase = 'playing'; this.phaseT = 0; }
+      // A fresh game waits for input; level changes/respawns auto-start after ~2.5s.
+      if (!this.needStart && this.phaseT > 50) this.beginPlay();
       this.moveSubs();
       return;
     }
@@ -264,7 +278,7 @@ class Game {
         }
       }
       if (hit) continue;
-      if (b.y >= FLOOR) { this.booms.push({ x: b.x - 30, y: FLOOR - 10, t: 0, life: 8, kind: 'sub' }); continue; }
+      if (b.y >= FLOOR) { play('explosion'); this.booms.push({ x: b.x - 30, y: FLOOR - 10, t: 0, life: 8, kind: 'sub' }); continue; }
       next.push(b);
     }
     this.bombs = next;
@@ -357,7 +371,10 @@ class Game {
       }
     }
 
-    if (this.phase === 'ready') this.centerText(s.text_ready);
+    if (this.phase === 'ready') {
+      this.centerText(s.text_ready);
+      if (this.needStart) this.drawStartPrompt();
+    }
     if (this.phase === 'over') this.centerText(s.text_over);
     if (this.paused) this.centerText(s.text_pause);
 
@@ -386,6 +403,16 @@ class Game {
   centerText(img: HTMLImageElement) {
     const scale = 2;
     this.ctx.drawImage(img, (W - img.width * scale) / 2, py(150), img.width * scale, img.height * scale);
+  }
+
+  drawStartPrompt() {
+    const c = this.ctx;
+    c.font = `bold 17px ${FONT}`;
+    c.textAlign = 'center'; c.textBaseline = 'middle';
+    const t = this.isTouch ? 'Tap a button to start' : 'Press an arrow key to start';
+    c.fillStyle = '#000'; c.fillText(t, W / 2 + 1, py(205) + 1);
+    c.fillStyle = '#fff'; c.fillText(t, W / 2, py(205));
+    c.textAlign = 'left';
   }
 
   drawBar() {
@@ -492,13 +519,14 @@ async function main() {
   window.addEventListener('keyup', (e) => game.keyup(e.code));
 
   const touch = window.matchMedia('(pointer: coarse)').matches;
+  game.isTouch = touch;
   const toCanvas = (e: PointerEvent) => {
     const r = canvas.getBoundingClientRect();
     return [(e.clientX - r.left) * (canvas.width / r.width), (e.clientY - r.top) * (canvas.height / r.height)] as const;
   };
   const startIfIdle = () => {
     if (game.phase === 'over') { game.startGame(); return true; }
-    if (game.phase === 'ready') { game.phase = 'playing'; game.phaseT = 0; }
+    if (game.phase === 'ready') { game.beginPlay(); }
     return false;
   };
   const steer = (cx: number, down: boolean) => {
@@ -530,8 +558,8 @@ async function main() {
     el.addEventListener('pointerleave', off);
     el.addEventListener('pointercancel', off);
   };
-  hold('btn-left', () => { game.left = true; }, () => { game.left = false; });
-  hold('btn-right', () => { game.right = true; }, () => { game.right = false; });
+  hold('btn-left', () => { if (!startIfIdle()) game.left = true; }, () => { game.left = false; });
+  hold('btn-right', () => { if (!startIfIdle()) game.right = true; }, () => { game.right = false; });
   const fire = (id: string, side: -1 | 1) => {
     document.getElementById(id)!.addEventListener('pointerdown', (e) => {
       e.preventDefault(); unlockAudio();
