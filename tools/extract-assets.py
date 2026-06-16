@@ -29,14 +29,15 @@ PAIRS = {
     'bomb0': (113, 114), 'bomb1': (115, 116), 'bomb2': (117, 118),
     'mine': (129, 130),
     'boom0': (121, 122), 'boom1': (123, 124), 'debris': (125, 126),
-    # birds: visible silhouette is the even id (152/154/156), odd id is its mask
-    'bird0': (152, 151), 'bird1': (154, 153), 'bird2': (156, 155),
     'plane0': (141, 142), 'plane1': (143, 144), 'plane2': (145, 146),
     'icon_bomb': (2, 3), 'text_pause': (93, 94),
 }
 BLACKKEY = {'text_over': 95, 'text_ready': 97}           # key pure black
 WHITEKEY = {'digits': 99}                                # red digits on white
 OPAQUE = {'bg': 100}
+# Birds: the original pairs a solid-black color layer (151/153/155) with a
+# silhouette mask (152/154/156). Bake the mask straight to a black silhouette.
+SILHOUETTE = {'bird0': 152, 'bird1': 154, 'bird2': 156}
 
 
 def extract_bmp(name):
@@ -96,12 +97,24 @@ def extract_sounds():
             open(os.path.join(snd, f'snd{name}.wav'), 'wb').write(hdr + data)
 
 
+def silhouette(n):
+    c = extract_bmp(n)
+    px = c.load()
+    for y in range(c.height):
+        for x in range(c.width):
+            r, g, b, _ = px[x, y]
+            px[x, y] = (0, 0, 0, 255) if (r < 128 and g < 128 and b < 128) else (0, 0, 0, 0)
+    return c
+
+
 def main():
     if not os.path.exists(EXE):
         sys.exit(f'missing {EXE}')
     os.makedirs(OUT, exist_ok=True)
     for name, (cn, mn) in PAIRS.items():
         bake_mask(cn, mn).save(os.path.join(OUT, f'{name}.png'))
+    for name, n in SILHOUETTE.items():
+        silhouette(n).save(os.path.join(OUT, f'{name}.png'))
     for name, n in BLACKKEY.items():
         key(n, white=False).save(os.path.join(OUT, f'{name}.png'))
     for name, n in WHITEKEY.items():

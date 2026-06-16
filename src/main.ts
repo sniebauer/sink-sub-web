@@ -369,12 +369,9 @@ class Game {
   drawPlane(p: Plane) {
     const c = this.ctx;
     const img = [this.s.plane0, this.s.plane1, this.s.plane2][p.frame];
-    // The plane bitmap faces right; it flies left, so mirror it.
-    c.save();
-    c.translate(Math.round(p.x) + img.width, py(Math.round(p.y)));
-    c.scale(-1, 1);
-    c.drawImage(img, 0, 0);
-    c.restore();
+    // The bitmap already faces left — the direction it flies — so no flip (the
+    // original blits it as-is; BitBlt can't mirror).
+    c.drawImage(img, Math.round(p.x), py(Math.round(p.y)));
   }
 
   drawSub(sub: Sub) {
