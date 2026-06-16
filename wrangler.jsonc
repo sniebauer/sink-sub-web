@@ -1,0 +1,12 @@
+{
+  // Deploy the built static site (dist/) as a Cloudflare static-assets Worker.
+  // Declaring `assets` with no `main` tells the Workers build to upload dist as
+  // a plain static site — bypassing the Vite-framework auto-config that requires
+  // Vite >= 6. `npm run build` (vite build) produces dist/.
+  "name": "sink-sub-web",
+  "compatibility_date": "2025-06-01",
+  "assets": {
+    "directory": "./dist",
+    "not_found_handling": "single-page-application"
+  }
+}
