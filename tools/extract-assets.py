@@ -75,6 +75,26 @@ def key(color_n, white):
     return c
 
 
+def extract_sounds():
+    """The 7 audio clips are custom (type 32513) resources wrestool won't unpack,
+    so read them straight from the EXE at the offsets wrestool *reports*. Some are
+    already RIFF/WAVE; the rest are raw 8-bit unsigned PCM mono @ 11025 Hz."""
+    import re, struct
+    snd = os.path.join(ROOT, 'public', 'sounds')
+    os.makedirs(snd, exist_ok=True)
+    listing = subprocess.run(['wrestool', '-l', EXE], capture_output=True, text=True).stdout
+    blob = open(EXE, 'rb').read()
+    for m in re.finditer(r'--type=32513 --name=(\d+) \[offset=0x([0-9a-f]+) size=(\d+)\]', listing):
+        name, off, size = m.group(1), int(m.group(2), 16), int(m.group(3))
+        data = blob[off:off + size]
+        if data[:4] == b'RIFF':
+            open(os.path.join(snd, f'snd{name}.wav'), 'wb').write(data)
+        else:
+            hdr = b'RIFF' + struct.pack('<I', 36 + len(data)) + b'WAVE' + b'fmt ' + \
+                struct.pack('<IHHIIHH', 16, 1, 1, 11025, 11025, 1, 8) + b'data' + struct.pack('<I', len(data))
+            open(os.path.join(snd, f'snd{name}.wav'), 'wb').write(hdr + data)
+
+
 def main():
     if not os.path.exists(EXE):
         sys.exit(f'missing {EXE}')
@@ -94,7 +114,9 @@ def main():
         if f.startswith('app_') and f.endswith('.png'):
             Image.open(os.path.join(RAW, f)).save(os.path.join(ROOT, 'public', 'icon.png'))
             break
+    extract_sounds()
     print('extracted sprites ->', OUT)
+    print('extracted sounds  ->', os.path.join(ROOT, 'public', 'sounds'))
 
 
 if __name__ == '__main__':

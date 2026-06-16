@@ -19,6 +19,7 @@ shell via an `<iframe>`, and playable standalone.
 - **X / .** — drop a sinkbomb off the **right** side
 - **Space / ↓** — drop on the side you're heading
 - **Enter / N** — start / restart
+- **P** — pause · **M** — mute (Game menu has these too)
 
 Only a limited number of sinkbombs can be in the water at once; they reload as
 they explode. Sinking a sub scores 100–3000 by its depth and speed; every 25,000
@@ -34,9 +35,10 @@ npm run build    # typecheck + production build to dist/
 
 ## Assets
 
-All sprites in `public/sprites/` are extracted from `original/SINKSUB.EXE` (a
-Windows 3.x NE binary; graphics are stored as BITMAP resources with mask+color
-transparency). Regenerate them with:
+All sprites in `public/sprites/` and sound effects in `public/sounds/` are
+extracted from `original/SINKSUB.EXE` (a Windows 3.x NE binary; graphics are
+BITMAP resources with mask+color transparency, sounds are 8-bit PCM / WAV
+resources). Regenerate them with:
 
 ```sh
 brew install icoutils

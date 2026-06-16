@@ -5,6 +5,7 @@
 
 import { loadSprites, drawNumber, type Sprites } from './sprites';
 import { reportReady, reportTitle } from './embed';
+import { initAudio, unlockAudio, play, toggleMute } from './audio';
 
 // --- geometry ----------------------------------------------------------------
 const BAR_H = 26; // top menu / status strip
@@ -35,6 +36,7 @@ const MENUS: { id: string; label: string; items: { label: string; action: string
   { id: 'game', label: 'Game', items: [
     { label: 'New Game', action: 'new' },
     { label: 'Pause', action: 'pause' },
+    { label: 'Sound', action: 'mute' },
   ] },
   { id: 'help', label: 'Help', items: [
     { label: 'Controls', action: 'controls' },
@@ -63,6 +65,7 @@ class Game {
   phase: Phase = 'ready';
   phaseT = 0;
   paused = false;
+  muted = false;
   openMenu: string | null = null;
   overlay: 'controls' | 'about' | null = null;
   menuHits: Hit[] = [];
@@ -97,6 +100,7 @@ class Game {
     this.phase = 'ready';
     this.phaseT = 0;
     reportTitle(`Level ${this.level}`);
+    play('levelStart');
   }
 
   spawnSubs() {
@@ -122,6 +126,7 @@ class Game {
     if (this.phase !== 'playing' || this.paused) return;
     if (this.bombs.length >= this.bombsMax) return;
     this.bombs.push({ x: this.boatX + side * (BOAT_HALF - 6), y: SURFACE - 2, vy: 1.1 });
+    play('bomb');
   }
 
   menuAction(action: string) {
@@ -131,6 +136,7 @@ class Game {
       case 'pause': if (this.phase === 'playing') this.paused = !this.paused; break;
       case 'controls': this.overlay = 'controls'; break;
       case 'about': this.overlay = 'about'; break;
+      case 'mute': this.muted = toggleMute(); break;
     }
   }
 
@@ -144,6 +150,7 @@ class Game {
       case 'KeyX': case 'Period': case 'Numpad3': this.dropBomb(1); break;
       case 'Space': case 'ArrowDown': this.dropBomb(this.boatVX >= 0 ? 1 : -1); break;
       case 'KeyP': if (this.phase === 'playing') this.paused = !this.paused; break;
+      case 'KeyM': this.muted = toggleMute(); break;
       case 'Enter': case 'KeyN':
         if (this.phase === 'over') this.startGame();
         else if (this.phase === 'ready') { this.phase = 'playing'; this.phaseT = 0; }
@@ -188,7 +195,7 @@ class Game {
     if (this.phase === 'dying') {
       this.moveSubs();
       if (this.phaseT > 60) {
-        if (this.lives <= 0) { this.phase = 'over'; this.phaseT = 0; reportTitle('Game Over'); }
+        if (this.lives <= 0) { this.phase = 'over'; this.phaseT = 0; reportTitle('Game Over'); play('gameOver'); }
         else this.startLevel();
       }
       return;
@@ -273,7 +280,8 @@ class Game {
     let pts = 100 + (0.6 * depthFrac + 0.4 * speedFrac) * 2900;
     pts = Math.max(100, Math.min(3000, Math.round(pts / 100) * 100));
     this.score += pts;
-    if (this.score >= this.nextLife) { this.lives++; this.nextLife += 25000; }
+    play('subBoom');
+    if (this.score >= this.nextLife) { this.lives++; this.nextLife += 25000; play('extraLife'); }
     this.booms.push({ x: sub.x, y: sub.y - 4, t: 0, life: 20, kind: 'sub' });
     this.subs.splice(i, 1);
   }
@@ -283,6 +291,7 @@ class Game {
     this.phase = 'dying';
     this.phaseT = 0;
     this.booms.push({ x: this.boatX - 55, y: BOAT_PY, t: 0, life: 60, kind: 'boat' });
+    play('boatBoom');
   }
 
   // --- render ------------------------------------------------------------
@@ -392,6 +401,7 @@ class Game {
       const iy = y0 + 2 + i * itemH;
       let label = it.label;
       if (it.action === 'pause') label = this.paused ? 'Resume' : 'Pause';
+      if (it.action === 'mute') label = this.muted ? 'Sound: Off' : 'Sound: On';
       c.fillStyle = '#000';
       c.fillText(label, x + padX, iy + itemH / 2);
       this.itemHits.push({ id: it.action, x, y: iy, w, h: itemH });
@@ -402,7 +412,7 @@ class Game {
     const c = this.ctx;
     const lines = this.overlay === 'controls'
       ? ['CONTROLS', '', '← / →   move  (opposite key brakes)', 'Z or ,   drop sinkbomb left',
-         'X or .   drop sinkbomb right', 'Space    drop on your heading', 'P pause      N new game', '', 'Click to close']
+         'X or .   drop sinkbomb right', 'Space    drop on your heading', 'P pause   N new game   M mute', '', 'Click to close']
       : ['SinkSub for Windows', 'Anders Wihlborg, 1993', '', 'Sink the hostile subs and dodge',
          'the floatmines they fire at you.', '', 'Browser port — Old Games', '', 'Click to close'];
     const bw = 380, bh = 196, bx = (W - bw) / 2, by = py(120);
@@ -430,9 +440,11 @@ async function main() {
   const sprites = await loadSprites();
   const game = new Game(ctx, sprites);
   reportReady();
+  initAudio().catch(() => { /* audio is best-effort */ });
 
   window.addEventListener('keydown', (e) => {
     if (['ArrowLeft', 'ArrowRight', 'ArrowDown', 'Space'].includes(e.code)) e.preventDefault();
+    unlockAudio();
     game.keydown(e.code);
   });
   window.addEventListener('keyup', (e) => game.keyup(e.code));
@@ -452,6 +464,7 @@ async function main() {
     game.right = down && !leftSide;
   };
   canvas.addEventListener('pointerdown', (e) => {
+    unlockAudio();
     const [cx, cy] = toCanvas(e);
     if (game.pointer(cx, cy)) return; // UI consumed it
     canvas.setPointerCapture(e.pointerId);
