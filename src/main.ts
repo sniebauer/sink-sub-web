@@ -3,7 +3,7 @@
 // drop "sinkbombs" onto enemy submarines, and dodge the floatmines they fire up
 // at you. Faithful to the original's rules (see original/SINKSUB.HLP).
 
-import { loadSprites, drawNumber, type Sprites } from './sprites';
+import { loadSprites, type Sprites } from './sprites';
 import { reportReady, reportTitle } from './embed';
 import { initAudio, unlockAudio, play, toggleMute } from './audio';
 
@@ -17,8 +17,6 @@ const FLOOR = 412; // subs/bombs bottom out here
 const BOAT_PY = 82; // boat sprite top, in playfield-y
 const BOAT_HALF = 52; // half boat width for collisions / bomb spawn
 const FONT = "'W95FA', 'MS Sans Serif', Tahoma, sans-serif";
-// The original sub bitmaps (103/105) are drawn pointing RIGHT; flip for left.
-const SUB_FACES_RIGHT = true;
 
 const py = (y: number) => BAR_H + y; // playfield-y -> canvas-y
 
@@ -330,18 +328,13 @@ class Game {
 
   drawSub(sub: Sub) {
     const c = this.ctx, s = this.s;
-    const img = sub.variant ? s.sub2_l : s.sub_l;
-    const facingRight = sub.vx > 0;
-    const x = Math.round(sub.x), y = py(Math.round(sub.y));
-    if (facingRight === SUB_FACES_RIGHT) {
-      c.drawImage(img, x, y);
-    } else {
-      c.save();
-      c.translate(x + sub.w, y);
-      c.scale(-1, 1);
-      c.drawImage(img, 0, 0);
-      c.restore();
-    }
+    const right = sub.vx > 0;
+    // Each sub has a left- and right-facing bitmap, but the two variants are
+    // mirrored differently in the source art, so pick per variant + direction.
+    const img = sub.variant
+      ? (right ? s.sub2_r : s.sub2_l) // small sub: 105 faces right, 109 faces left
+      : (right ? s.sub_l : s.sub_r);  // big sub:   103 faces right, 111 faces left
+    c.drawImage(img, Math.round(sub.x), py(Math.round(sub.y)));
   }
 
   centerText(img: HTMLImageElement) {
@@ -366,20 +359,26 @@ class Game {
       this.menuHits.push({ id: m.id, x: mx - 4, y: 0, w: w + 8, h: BAR_H });
       mx += w + 18;
     }
-    // right-aligned status: lives, subs, bombs, level, score
+    // status: small icon + red value pairs, then Level / Score, all in W95FA.
     const midY = BAR_H / 2;
-    const dy = Math.round(midY - s.digits.height / 2);
-    let x = 150;
+    let x = 138;
     const icon = (img: HTMLImageElement, h: number) => {
       const w = (img.width / img.height) * h;
-      c.drawImage(img, x, Math.round(midY - h / 2), w, h); x += w + 3;
+      c.drawImage(img, x, Math.round(midY - h / 2), w, h); x += w + 4;
     };
-    c.fillStyle = '#000';
-    icon(s.boat, 12); x += drawNumber(c, s.digits, this.lives, x, dy) + 8;
-    icon(s.sub_r, 12); x += drawNumber(c, s.digits, this.subs.length, x, dy) + 8;
-    icon(s.icon_bomb, 12); x += drawNumber(c, s.digits, this.bombsMax - this.bombs.length, x, dy) + 14;
-    c.fillText('Level', x, midY + 1); x += 38; x += drawNumber(c, s.digits, this.level, x, dy) + 14;
-    c.fillText('Score', x, midY + 1); x += 40; drawNumber(c, s.digits, this.score, x, dy);
+    const num = (v: number) => {
+      c.fillStyle = '#d00000'; c.font = `bold 15px ${FONT}`;
+      const t = String(v); c.fillText(t, x, midY + 1); x += c.measureText(t).width + 12;
+    };
+    const lbl = (t: string) => {
+      c.fillStyle = '#000'; c.font = `14px ${FONT}`;
+      c.fillText(t, x, midY + 1); x += c.measureText(t).width + 5;
+    };
+    icon(s.boat, 13); num(this.lives);
+    icon(s.sub_l, 13); num(this.subs.length);
+    icon(s.icon_bomb, 12); num(this.bombsMax - this.bombs.length);
+    lbl('Level'); num(this.level);
+    lbl('Score'); num(this.score);
   }
 
   drawDropdown() {
@@ -449,34 +448,58 @@ async function main() {
   });
   window.addEventListener('keyup', (e) => game.keyup(e.code));
 
+  const touch = window.matchMedia('(pointer: coarse)').matches;
+
   const toCanvas = (e: PointerEvent) => {
     const r = canvas.getBoundingClientRect();
     return [(e.clientX - r.left) * (canvas.width / r.width), (e.clientY - r.top) * (canvas.height / r.height)] as const;
   };
+  const startIfIdle = () => {
+    if (game.phase === 'over') { game.startGame(); return true; }
+    if (game.phase === 'ready') { game.phase = 'playing'; game.phaseT = 0; }
+    return false;
+  };
   const steer = (cx: number, down: boolean) => {
     const leftSide = cx < W / 2;
-    if (down) {
-      if (game.phase === 'over') { game.startGame(); return; }
-      if (game.phase === 'ready') { game.phase = 'playing'; game.phaseT = 0; }
-      game.dropBomb(leftSide ? -1 : 1);
-    }
+    if (down) { if (startIfIdle()) return; game.dropBomb(leftSide ? -1 : 1); }
     game.left = down && leftSide;
     game.right = down && !leftSide;
   };
   canvas.addEventListener('pointerdown', (e) => {
     unlockAudio();
     const [cx, cy] = toCanvas(e);
-    if (game.pointer(cx, cy)) return; // UI consumed it
+    if (game.pointer(cx, cy)) return; // menus/overlay consumed it
+    if (touch) return; // on touch devices the on-screen buttons drive the game
     canvas.setPointerCapture(e.pointerId);
     steer(cx, true);
   });
   canvas.addEventListener('pointermove', (e) => {
-    if (!(e.pressure > 0 || e.buttons)) return;
+    if (touch || !(e.pressure > 0 || e.buttons)) return;
     if (game.openMenu || game.overlay) return;
     const [cx, cy] = toCanvas(e);
     if (cy >= BAR_H) steer(cx, true);
   });
   canvas.addEventListener('pointerup', () => { game.left = false; game.right = false; });
+
+  // On-screen touch controls (shown on coarse-pointer devices via CSS).
+  const hold = (id: string, on: () => void, off: () => void) => {
+    const el = document.getElementById(id)!;
+    el.addEventListener('pointerdown', (e) => { e.preventDefault(); unlockAudio(); on(); });
+    el.addEventListener('pointerup', (e) => { e.preventDefault(); off(); });
+    el.addEventListener('pointerleave', off);
+    el.addEventListener('pointercancel', off);
+  };
+  hold('btn-left', () => { game.left = true; }, () => { game.left = false; });
+  hold('btn-right', () => { game.right = true; }, () => { game.right = false; });
+  const fire = (id: string, side: -1 | 1) => {
+    document.getElementById(id)!.addEventListener('pointerdown', (e) => {
+      e.preventDefault(); unlockAudio();
+      if (startIfIdle()) return;
+      game.dropBomb(side);
+    });
+  };
+  fire('btn-bl', -1);
+  fire('btn-br', 1);
 
   let acc = 0, last = performance.now();
   const STEP = 1000 / 60;
