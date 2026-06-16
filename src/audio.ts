@@ -7,15 +7,20 @@
 // SOUNDS table if any are mismatched. `cap` trims a long clip (e.g. the bomb
 // whistle) so rapid events don't smear together.
 
-export type SoundName = 'bomb' | 'subBoom' | 'boatBoom' | 'extraLife' | 'gameOver' | 'levelStart';
+// EVENT -> resource mapping recovered from SINKSUB.EXE itself (each event calls
+// playWave(<id>) at 0x4bdb): 162 bomb-drop, 163 sonar ping, 164 explosion,
+// 165 get-ready, 166 game-over, 167 level-cleared, 169 extra-life.
+export type SoundName = 'bomb' | 'explosion' | 'levelStart' | 'levelClear' | 'extraLife' | 'gameOver' | 'ping' | 'planeHit';
 
 const SOUNDS: Record<SoundName, { res: number; gain: number; cap?: number }> = {
-  bomb: { res: 166, gain: 0.5, cap: 0.7 },
-  subBoom: { res: 163, gain: 0.8 },
-  boatBoom: { res: 162, gain: 0.9 },
-  extraLife: { res: 167, gain: 0.7 },
-  gameOver: { res: 165, gain: 0.7 },
-  levelStart: { res: 164, gain: 0.6 },
+  bomb: { res: 162, gain: 0.5, cap: 0.6 },
+  explosion: { res: 164, gain: 0.85 },
+  levelStart: { res: 165, gain: 0.7 },
+  levelClear: { res: 167, gain: 0.75 },
+  extraLife: { res: 169, gain: 0.85 },
+  gameOver: { res: 166, gain: 0.75 },
+  ping: { res: 163, gain: 0.22 },
+  planeHit: { res: 170, gain: 0.7 },
 };
 
 let ctx: AudioContext | null = null;

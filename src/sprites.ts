@@ -8,7 +8,7 @@ export const SPRITE_NAMES = [
   'boat_die0', 'boat_die1', 'boat_die2', 'boat_die3',
   'bomb0', 'bomb1', 'bomb2',
   'boom0', 'boom1', 'debris',
-  'bubble0', 'bubble1', 'bubble2',
+  'bird0', 'bird1', 'bird2',
   'mine',
   'sub_l', 'sub_r', 'sub2_l', 'sub2_r', 'sub_dive',
   'plane0', 'plane1', 'plane2',

@@ -1,35 +1,43 @@
 // SinkSub — a browser port of the 1993 Windows game by Anders Wihlborg, built
-// from the original game's extracted sprites. You pilot a boat on the surface,
-// drop "sinkbombs" onto enemy submarines, and dodge the floatmines they fire up
-// at you. Faithful to the original's rules (see original/SINKSUB.HLP).
+// from the original game's extracted sprites and tuned to the original's own
+// constants (recovered by disassembling SINKSUB.EXE): a 50ms / 20-fps tick,
+// velocity-based boat control, and the authentic sound→event mapping.
 
 import { loadSprites, type Sprites } from './sprites';
 import { reportReady, reportTitle } from './embed';
 import { initAudio, unlockAudio, play, toggleMute } from './audio';
 
 // --- geometry ----------------------------------------------------------------
-const BAR_H = 26; // top menu / status strip
+const BAR_H = 26;
 const PLAY_W = 640;
 const PLAY_H = 450;
-const W = PLAY_W; // canvas height is BAR_H + PLAY_H = 476 (set in index.html)
-const SURFACE = 100; // water surface, in playfield-y
-const FLOOR = 412; // subs/bombs bottom out here
-const BOAT_PY = 82; // boat sprite top, in playfield-y
-const BOAT_HALF = 52; // half boat width for collisions / bomb spawn
+const W = PLAY_W; // canvas height = BAR_H + PLAY_H = 476 (index.html)
+const SURFACE = 100; // water surface, playfield-y
+const FLOOR = 412; // subs/bombs bottom out
+const BOAT_PY = 82;
+const BOAT_HALF = 52;
 const FONT = "'W95FA', 'MS Sans Serif', Tahoma, sans-serif";
 
-const py = (y: number) => BAR_H + y; // playfield-y -> canvas-y
+// Authentic per-tick speeds (px per 50ms tick) from the disassembly.
+const BOAT_VMAX = 3; // boat velocity is ±3 px/tick, set by key presses, persists
+const SUB_SPEED = 2; // subs cruise at 2 px/tick
+const BOMB_VY = 1; // sinkbombs sink 1 px/tick
+const MINE_VY = 2; // floatmines rise 2 px/tick (faster than bombs, per the manual)
+const PLANE_VX = 2; // plane crosses at 2 px/tick
+const PING_TICKS = 100; // sonar ping every ~5s (100 ticks @ 20fps)
 
-// --- entities ----------------------------------------------------------------
+const py = (y: number) => BAR_H + y;
+
 interface Sub { x: number; y: number; vx: number; w: number; h: number; variant: number; fire: number; }
-interface Bomb { x: number; y: number; vy: number; }
-interface Mine { x: number; y: number; vy: number; }
-interface Boom { x: number; y: number; t: number; life: number; kind: 'sub' | 'boat' | 'pop'; }
+interface Bomb { x: number; y: number; }
+interface Mine { x: number; y: number; }
+interface Boom { x: number; y: number; t: number; life: number; kind: 'sub' | 'boat'; }
+interface Plane { x: number; y: number; frame: number; animT: number; }
+interface Bird { x: number; y: number; frame: number; animT: number; speed: number; }
 interface Hit { id: string; x: number; y: number; w: number; h: number; }
 
 type Phase = 'ready' | 'playing' | 'dying' | 'over';
 
-// menu definitions: top-level label -> items (label + action id)
 const MENUS: { id: string; label: string; items: { label: string; action: string }[] }[] = [
   { id: 'game', label: 'Game', items: [
     { label: 'New Game', action: 'new' },
@@ -45,20 +53,24 @@ const MENUS: { id: string; label: string; items: { label: string; action: string
 class Game {
   ctx: CanvasRenderingContext2D;
   s: Sprites;
-  // status
   score = 0;
   lives = 3;
   level = 1;
   nextLife = 25000;
   bombsMax = 3;
-  // boat
+  // boat: velocity in px/tick, persists until a key nudges it (no friction)
   boatX = W / 2;
-  boatVX = 0;
+  boatVel = 0;
   // world
   subs: Sub[] = [];
   bombs: Bomb[] = [];
   mines: Mine[] = [];
   booms: Boom[] = [];
+  plane: Plane | null = null;
+  birds: Bird[] = [];
+  planeTimer = 240;
+  birdTimer = 30;
+  pingT = 0;
   // phase / ui
   phase: Phase = 'ready';
   phaseT = 0;
@@ -68,7 +80,6 @@ class Game {
   overlay: 'controls' | 'about' | null = null;
   menuHits: Hit[] = [];
   itemHits: Hit[] = [];
-  // input
   left = false;
   right = false;
 
@@ -84,6 +95,8 @@ class Game {
     this.level = 1;
     this.nextLife = 25000;
     this.paused = false;
+    this.birds = [];
+    this.plane = null;
     this.startLevel();
   }
 
@@ -93,7 +106,8 @@ class Game {
     this.mines = [];
     this.booms = [];
     this.boatX = W / 2;
-    this.boatVX = 0;
+    this.boatVel = 0;
+    this.pingT = 0;
     this.spawnSubs();
     this.phase = 'ready';
     this.phaseT = 0;
@@ -106,15 +120,13 @@ class Game {
     this.subs = [];
     for (let i = 0; i < n; i++) {
       const dir = Math.random() < 0.5 ? -1 : 1;
-      const speed = 0.7 + Math.random() * (0.6 + this.level * 0.18);
       this.subs.push({
         x: Math.random() * (W - 64),
         y: 150 + Math.random() * (FLOOR - 175),
-        vx: dir * speed,
-        w: 64,
-        h: 20,
+        vx: dir * SUB_SPEED,
+        w: 64, h: 20,
         variant: Math.random() < 0.5 ? 0 : 1,
-        fire: 60 + Math.random() * 180,
+        fire: 30 + Math.random() * 90,
       });
     }
   }
@@ -123,7 +135,7 @@ class Game {
   dropBomb(side: -1 | 1) {
     if (this.phase !== 'playing' || this.paused) return;
     if (this.bombs.length >= this.bombsMax) return;
-    this.bombs.push({ x: this.boatX + side * (BOAT_HALF - 6), y: SURFACE - 2, vy: 1.1 });
+    this.bombs.push({ x: this.boatX + side * (BOAT_HALF - 6), y: SURFACE - 2 });
     play('bomb');
   }
 
@@ -146,7 +158,7 @@ class Game {
       case 'ArrowRight': case 'KeyD': this.right = true; break;
       case 'KeyZ': case 'Comma': case 'Numpad1': this.dropBomb(-1); break;
       case 'KeyX': case 'Period': case 'Numpad3': this.dropBomb(1); break;
-      case 'Space': case 'ArrowDown': this.dropBomb(this.boatVX >= 0 ? 1 : -1); break;
+      case 'Space': case 'ArrowDown': this.dropBomb(this.boatVel >= 0 ? 1 : -1); break;
       case 'KeyP': if (this.phase === 'playing') this.paused = !this.paused; break;
       case 'KeyM': this.muted = toggleMute(); break;
       case 'Enter': case 'KeyN':
@@ -160,10 +172,8 @@ class Game {
     if (code === 'ArrowRight' || code === 'KeyD') this.right = false;
   }
 
-  /** A click/tap at canvas coords. Returns true if the UI consumed it. */
   pointer(cx: number, cy: number): boolean {
     if (this.overlay) { this.overlay = null; return true; }
-    // open dropdown? check items, then labels, else close.
     if (this.openMenu) {
       for (const h of this.itemHits) if (inHit(h, cx, cy)) { this.menuAction(h.id); return true; }
       for (const h of this.menuHits) if (inHit(h, cx, cy)) { this.openMenu = h.id; return true; }
@@ -172,62 +182,71 @@ class Game {
     }
     if (cy < BAR_H) {
       for (const h of this.menuHits) if (inHit(h, cx, cy)) { this.openMenu = h.id; return true; }
-      return true; // clicking the bar (not a label) does nothing, but isn't gameplay
+      return true;
     }
     return false;
   }
 
-  // --- update ------------------------------------------------------------
+  // --- update (one 50ms tick) -------------------------------------------
   update() {
     if (this.paused || this.overlay) return;
     this.phaseT++;
     for (const b of this.booms) b.t++;
     this.booms = this.booms.filter((b) => b.t < b.life);
 
+    // sky ambiance runs in every phase
+    this.updatePlane();
+    this.updateBirds();
+
     if (this.phase === 'ready') {
-      if (this.phaseT > 75) { this.phase = 'playing'; this.phaseT = 0; }
+      if (this.phaseT > 28) { this.phase = 'playing'; this.phaseT = 0; }
       this.moveSubs();
       return;
     }
     if (this.phase === 'over') { this.moveSubs(); return; }
     if (this.phase === 'dying') {
       this.moveSubs();
-      if (this.phaseT > 60) {
+      if (this.phaseT > 22) {
         if (this.lives <= 0) { this.phase = 'over'; this.phaseT = 0; reportTitle('Game Over'); play('gameOver'); }
-        else this.startLevel();
+        else this.startLevelKeepStats();
       }
       return;
     }
 
+    // playing
+    if (++this.pingT >= PING_TICKS) { this.pingT = 0; play('ping'); }
     this.moveBoat();
     this.moveSubs();
     this.moveBombs();
     this.moveMines();
-    if (this.subs.length === 0) { this.level++; this.startLevel(); }
+    if (this.subs.length === 0) { play('levelClear'); this.level++; this.startLevel(); }
+  }
+
+  // After losing a life: same level again (the original restarts the level).
+  startLevelKeepStats() {
+    this.startLevel();
   }
 
   moveBoat() {
-    const accel = 0.32, max = 5;
-    if (this.left && !this.right) this.boatVX -= accel;
-    else if (this.right && !this.left) this.boatVX += accel;
-    else this.boatVX *= 0.92;
-    this.boatVX = Math.max(-max, Math.min(max, this.boatVX));
-    this.boatX += this.boatVX;
-    if (this.boatX < BOAT_HALF) { this.boatX = BOAT_HALF; this.boatVX = 0; }
-    if (this.boatX > W - BOAT_HALF) { this.boatX = W - BOAT_HALF; this.boatVX = 0; }
+    // Each held tick nudges velocity ±1 toward ±VMAX; it persists when released,
+    // so you brake by pressing the opposite key (faithful to the original).
+    if (this.left && !this.right) this.boatVel = Math.max(-BOAT_VMAX, this.boatVel - 1);
+    else if (this.right && !this.left) this.boatVel = Math.min(BOAT_VMAX, this.boatVel + 1);
+    this.boatX += this.boatVel;
+    if (this.boatX < BOAT_HALF) { this.boatX = BOAT_HALF; this.boatVel = 0; }
+    if (this.boatX > W - BOAT_HALF) { this.boatX = W - BOAT_HALF; this.boatVel = 0; }
   }
 
   moveSubs() {
     for (const sub of this.subs) {
       sub.x += sub.vx;
-      // turn around at the screen edges (don't wrap)
-      if (sub.x < 0) { sub.x = 0; sub.vx = Math.abs(sub.vx); }
-      if (sub.x > W - sub.w) { sub.x = W - sub.w; sub.vx = -Math.abs(sub.vx); }
+      if (sub.x < 0) { sub.x = 0; sub.vx = SUB_SPEED; }
+      if (sub.x > W - sub.w) { sub.x = W - sub.w; sub.vx = -SUB_SPEED; }
       if (this.phase === 'playing') {
         sub.fire--;
-        if (sub.fire <= 0 && this.mines.length < 4 + this.level) {
-          this.mines.push({ x: sub.x + sub.w / 2, y: sub.y, vy: -1.7 - Math.random() * 0.5 });
-          sub.fire = 120 + Math.random() * Math.max(80, 260 - this.level * 14);
+        if (sub.fire <= 0 && this.mines.length < 3 + this.level) {
+          this.mines.push({ x: sub.x + sub.w / 2, y: sub.y });
+          sub.fire = 50 + Math.random() * Math.max(40, 140 - this.level * 8);
         }
       }
     }
@@ -236,8 +255,7 @@ class Game {
   moveBombs() {
     const next: Bomb[] = [];
     for (const b of this.bombs) {
-      b.y += b.vy;
-      b.vy = Math.min(b.vy + 0.012, 2.4);
+      b.y += BOMB_VY;
       let hit = false;
       for (let i = 0; i < this.subs.length; i++) {
         const sub = this.subs[i];
@@ -246,7 +264,7 @@ class Game {
         }
       }
       if (hit) continue;
-      if (b.y >= FLOOR) { this.booms.push({ x: b.x - 30, y: FLOOR - 10, t: 0, life: 16, kind: 'sub' }); continue; }
+      if (b.y >= FLOOR) { this.booms.push({ x: b.x - 30, y: FLOOR - 10, t: 0, life: 8, kind: 'sub' }); continue; }
       next.push(b);
     }
     this.bombs = next;
@@ -255,16 +273,10 @@ class Game {
   moveMines() {
     const next: Mine[] = [];
     for (const m of this.mines) {
-      m.y += m.vy;
-      // A floatmine rises only as far as the surface, where it either hits the
-      // boat or pops — it never flies up into the sky.
+      m.y -= MINE_VY;
       if (m.y <= SURFACE) {
-        if (this.phase === 'playing' && m.x > this.boatX - BOAT_HALF && m.x < this.boatX + BOAT_HALF) {
-          this.killBoat();
-        } else {
-          this.booms.push({ x: m.x - 2, y: SURFACE - 4, t: 0, life: 12, kind: 'pop' });
-        }
-        continue;
+        if (this.phase === 'playing' && m.x > this.boatX - BOAT_HALF && m.x < this.boatX + BOAT_HALF) this.killBoat();
+        continue; // reached the surface — hit the boat or just pops; never enters the sky
       }
       next.push(m);
     }
@@ -274,13 +286,12 @@ class Game {
   destroySub(i: number) {
     const sub = this.subs[i];
     const depthFrac = (sub.y - 150) / (FLOOR - 175);
-    const speedFrac = Math.min(1, Math.abs(sub.vx) / (1.3 + this.level * 0.18));
-    let pts = 100 + (0.6 * depthFrac + 0.4 * speedFrac) * 2900;
+    let pts = 100 + (0.65 * depthFrac + 0.35) * 2900;
     pts = Math.max(100, Math.min(3000, Math.round(pts / 100) * 100));
     this.score += pts;
-    play('subBoom');
+    play('explosion');
     if (this.score >= this.nextLife) { this.lives++; this.nextLife += 25000; play('extraLife'); }
-    this.booms.push({ x: sub.x, y: sub.y - 4, t: 0, life: 20, kind: 'sub' });
+    this.booms.push({ x: sub.x, y: sub.y - 4, t: 0, life: 8, kind: 'sub' });
     this.subs.splice(i, 1);
   }
 
@@ -288,8 +299,33 @@ class Game {
     this.lives--;
     this.phase = 'dying';
     this.phaseT = 0;
-    this.booms.push({ x: this.boatX - 55, y: BOAT_PY, t: 0, life: 60, kind: 'boat' });
-    play('boatBoom');
+    this.booms.push({ x: this.boatX - 55, y: BOAT_PY, t: 0, life: 22, kind: 'boat' });
+    play('explosion');
+  }
+
+  // --- sky: plane + birds ------------------------------------------------
+  updatePlane() {
+    if (this.plane) {
+      const p = this.plane;
+      p.x -= PLANE_VX;
+      if (++p.animT >= 4) { p.animT = 0; p.frame = (p.frame + 1) % 3; }
+      if (p.x < -70) this.plane = null;
+    } else if (--this.planeTimer <= 0) {
+      this.planeTimer = 260 + Math.floor(Math.random() * 260); // ~13–26s between flybys
+      this.plane = { x: W + 4, y: 6 + Math.random() * 48, frame: 0, animT: 0 };
+    }
+  }
+
+  updateBirds() {
+    for (const b of this.birds) {
+      b.x += b.speed;
+      if (++b.animT >= 5) { b.animT = 0; b.frame = (b.frame + 1) % 3; }
+    }
+    this.birds = this.birds.filter((b) => b.x < W + 8);
+    if (--this.birdTimer <= 0 && this.birds.length < 3) {
+      this.birdTimer = 40 + Math.floor(Math.random() * 70);
+      this.birds.push({ x: -8, y: 8 + Math.random() * 70, frame: 0, animT: 0, speed: 0.6 + Math.random() * 0.9 });
+    }
   }
 
   // --- render ------------------------------------------------------------
@@ -298,19 +334,23 @@ class Game {
     c.imageSmoothingEnabled = false;
     c.drawImage(s.bg, 0, py(0), PLAY_W, PLAY_H);
 
+    // sky
+    for (const b of this.birds) {
+      const f = [s.bird0, s.bird1, s.bird2][b.frame];
+      c.drawImage(f, Math.round(b.x), py(Math.round(b.y)));
+    }
+    if (this.plane) this.drawPlane(this.plane);
+
     for (const sub of this.subs) this.drawSub(sub);
     for (const m of this.mines) c.drawImage(s.mine, Math.round(m.x) - 2, py(Math.round(m.y)));
     for (const b of this.bombs) {
-      const fr = [s.bomb0, s.bomb1, s.bomb2][Math.floor(b.y / 6) % 3];
+      const fr = [s.bomb0, s.bomb1, s.bomb2][Math.floor(b.y / 5) % 3];
       c.drawImage(fr, Math.round(b.x) - 2, py(Math.round(b.y)));
     }
     if (this.phase !== 'dying') c.drawImage(s.boat, Math.round(this.boatX) - 55, py(BOAT_PY));
     for (const b of this.booms) {
       if (b.kind === 'boat') {
-        const f = [s.boat_die0, s.boat_die1, s.boat_die2, s.boat_die3][Math.min(3, Math.floor(b.t / 15))];
-        c.drawImage(f, Math.round(b.x), py(b.y));
-      } else if (b.kind === 'pop') {
-        const f = [s.bubble0, s.bubble1, s.bubble2][Math.min(2, Math.floor(b.t / 4))];
+        const f = [s.boat_die0, s.boat_die1, s.boat_die2, s.boat_die3][Math.min(3, Math.floor(b.t / 5))];
         c.drawImage(f, Math.round(b.x), py(b.y));
       } else {
         c.drawImage(b.t < b.life / 2 ? s.boom0 : s.boom1, Math.round(b.x), py(b.y));
@@ -326,14 +366,23 @@ class Game {
     if (this.overlay) this.drawOverlay();
   }
 
+  drawPlane(p: Plane) {
+    const c = this.ctx;
+    const img = [this.s.plane0, this.s.plane1, this.s.plane2][p.frame];
+    // The plane bitmap faces right; it flies left, so mirror it.
+    c.save();
+    c.translate(Math.round(p.x) + img.width, py(Math.round(p.y)));
+    c.scale(-1, 1);
+    c.drawImage(img, 0, 0);
+    c.restore();
+  }
+
   drawSub(sub: Sub) {
     const c = this.ctx, s = this.s;
     const right = sub.vx > 0;
-    // Each sub has a left- and right-facing bitmap, but the two variants are
-    // mirrored differently in the source art, so pick per variant + direction.
     const img = sub.variant
-      ? (right ? s.sub2_r : s.sub2_l) // small sub: 105 faces right, 109 faces left
-      : (right ? s.sub_l : s.sub_r);  // big sub:   103 faces right, 111 faces left
+      ? (right ? s.sub2_r : s.sub2_l)
+      : (right ? s.sub_l : s.sub_r);
     c.drawImage(img, Math.round(sub.x), py(Math.round(sub.y)));
   }
 
@@ -348,7 +397,6 @@ class Game {
     c.fillStyle = '#808080'; c.fillRect(0, BAR_H - 1, W, 1);
     c.textBaseline = 'middle';
     c.font = `14px ${FONT}`;
-    // menu labels (with measured hit rects)
     this.menuHits = [];
     let mx = 8;
     for (const m of MENUS) {
@@ -359,7 +407,6 @@ class Game {
       this.menuHits.push({ id: m.id, x: mx - 4, y: 0, w: w + 8, h: BAR_H });
       mx += w + 18;
     }
-    // status: small icon + red value pairs, then Level / Score, all in W95FA.
     const midY = BAR_H / 2;
     let x = 138;
     const icon = (img: HTMLImageElement, h: number) => {
@@ -390,7 +437,6 @@ class Game {
     const w = Math.max(90, ...menu.items.map((it) => c.measureText(it.label).width + padX * 2));
     const x = anchor.x, y0 = BAR_H;
     const h = menu.items.length * itemH + 4;
-    // raised gray box
     c.fillStyle = '#c0c0c0'; c.fillRect(x, y0, w, h);
     c.fillStyle = '#fff'; c.fillRect(x, y0, w, 1); c.fillRect(x, y0, 1, h);
     c.fillStyle = '#000'; c.fillRect(x + w - 1, y0, 1, h); c.fillRect(x, y0 + h - 1, w, 1);
@@ -410,8 +456,8 @@ class Game {
   drawOverlay() {
     const c = this.ctx;
     const lines = this.overlay === 'controls'
-      ? ['CONTROLS', '', '← / →   move  (opposite key brakes)', 'Z or ,   drop sinkbomb left',
-         'X or .   drop sinkbomb right', 'Space    drop on your heading', 'P pause   N new game   M mute', '', 'Click to close']
+      ? ['CONTROLS', '', '← / →   steer (it keeps gliding;', '          press the other way to brake)',
+         'Z or ,   drop sinkbomb left', 'X or .   drop sinkbomb right', 'P pause   N new game   M mute', '', 'Click to close']
       : ['SinkSub for Windows', 'Anders Wihlborg, 1993', '', 'Sink the hostile subs and dodge',
          'the floatmines they fire at you.', '', 'Browser port — Old Games', '', 'Click to close'];
     const bw = 380, bh = 196, bx = (W - bw) / 2, by = py(120);
@@ -439,7 +485,7 @@ async function main() {
   const sprites = await loadSprites();
   const game = new Game(ctx, sprites);
   reportReady();
-  initAudio().catch(() => { /* audio is best-effort */ });
+  initAudio().catch(() => { /* best-effort */ });
 
   window.addEventListener('keydown', (e) => {
     if (['ArrowLeft', 'ArrowRight', 'ArrowDown', 'Space'].includes(e.code)) e.preventDefault();
@@ -449,7 +495,6 @@ async function main() {
   window.addEventListener('keyup', (e) => game.keyup(e.code));
 
   const touch = window.matchMedia('(pointer: coarse)').matches;
-
   const toCanvas = (e: PointerEvent) => {
     const r = canvas.getBoundingClientRect();
     return [(e.clientX - r.left) * (canvas.width / r.width), (e.clientY - r.top) * (canvas.height / r.height)] as const;
@@ -468,8 +513,8 @@ async function main() {
   canvas.addEventListener('pointerdown', (e) => {
     unlockAudio();
     const [cx, cy] = toCanvas(e);
-    if (game.pointer(cx, cy)) return; // menus/overlay consumed it
-    if (touch) return; // on touch devices the on-screen buttons drive the game
+    if (game.pointer(cx, cy)) return;
+    if (touch) return;
     canvas.setPointerCapture(e.pointerId);
     steer(cx, true);
   });
@@ -481,7 +526,6 @@ async function main() {
   });
   canvas.addEventListener('pointerup', () => { game.left = false; game.right = false; });
 
-  // On-screen touch controls (shown on coarse-pointer devices via CSS).
   const hold = (id: string, on: () => void, off: () => void) => {
     const el = document.getElementById(id)!;
     el.addEventListener('pointerdown', (e) => { e.preventDefault(); unlockAudio(); on(); });
@@ -501,10 +545,11 @@ async function main() {
   fire('btn-bl', -1);
   fire('btn-br', 1);
 
+  // Simulate at the original 50ms / 20-fps tick; render every animation frame.
   let acc = 0, last = performance.now();
-  const STEP = 1000 / 60;
+  const STEP = 1000 / 20;
   function frame(now: number) {
-    acc += Math.min(now - last, 100); last = now;
+    acc += Math.min(now - last, 200); last = now;
     while (acc >= STEP) { game.update(); acc -= STEP; }
     game.draw();
     requestAnimationFrame(frame);

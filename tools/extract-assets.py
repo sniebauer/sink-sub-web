@@ -29,7 +29,8 @@ PAIRS = {
     'bomb0': (113, 114), 'bomb1': (115, 116), 'bomb2': (117, 118),
     'mine': (129, 130),
     'boom0': (121, 122), 'boom1': (123, 124), 'debris': (125, 126),
-    'bubble0': (151, 152), 'bubble1': (153, 154), 'bubble2': (155, 156),
+    # birds: visible silhouette is the even id (152/154/156), odd id is its mask
+    'bird0': (152, 151), 'bird1': (154, 153), 'bird2': (156, 155),
     'plane0': (141, 142), 'plane1': (143, 144), 'plane2': (145, 146),
     'icon_bomb': (2, 3), 'text_pause': (93, 94),
 }
