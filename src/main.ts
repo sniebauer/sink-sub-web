@@ -25,10 +25,12 @@ const BOMB_VY = 1; // sinkbombs sink 1 px/tick
 const MINE_VY = 2; // floatmines rise 2 px/tick (faster than bombs, per the manual)
 const PLANE_VX = 2; // plane crosses at 2 px/tick
 const PING_TICKS = 100; // sonar ping every ~5s (100 ticks @ 20fps)
+const SUB_SURFACE_Y = 138; // depth a surfaced (firing) sub sits at
+const SUB_FIRE_RANGE = 72; // a surfaced sub fires when the boat is within this (px)
 
 const py = (y: number) => BAR_H + y;
 
-interface Sub { x: number; y: number; vx: number; w: number; h: number; variant: number; fire: number; }
+interface Sub { x: number; y: number; vx: number; w: number; h: number; variant: number; fire: number; surfaced: boolean; }
 interface Bomb { x: number; y: number; }
 interface Mine { x: number; y: number; }
 interface Boom { x: number; y: number; t: number; life: number; kind: 'sub' | 'boat'; }
@@ -129,14 +131,16 @@ class Game {
     const n = Math.min(2 + this.level, 8);
     this.subs = [];
     for (let i = 0; i < n; i++) {
-      const dir = Math.random() < 0.5 ? -1 : 1;
+      // All subs cruise LEFT; spread across the screen (a few enter from the
+      // right) so they reach the edge — and surface — at different times.
       this.subs.push({
-        x: Math.random() * (W - 64),
+        x: 70 + Math.random() * (W - 20),
         y: 150 + Math.random() * (FLOOR - 175),
-        vx: dir * SUB_SPEED,
+        vx: -SUB_SPEED,
         w: 64, h: 20,
         variant: Math.random() < 0.5 ? 0 : 1,
-        fire: 30 + Math.random() * 90,
+        fire: 0,
+        surfaced: false,
       });
     }
   }
@@ -255,15 +259,28 @@ class Game {
 
   moveSubs() {
     for (const sub of this.subs) {
-      sub.x += sub.vx;
-      if (sub.x < 0) { sub.x = 0; sub.vx = SUB_SPEED; }
-      if (sub.x > W - sub.w) { sub.x = W - sub.w; sub.vx = -SUB_SPEED; }
-      if (this.phase === 'playing') {
-        sub.fire--;
-        if (sub.fire <= 0 && this.mines.length < 3 + this.level) {
-          this.mines.push({ x: sub.x + sub.w / 2, y: sub.y });
-          sub.fire = 50 + Math.random() * Math.max(40, 140 - this.level * 8);
+      if (sub.surfaced) {
+        // Stationary at the surface; fires a torpedo straight up at the boat
+        // when it passes overhead. Only surfaced subs fire.
+        if (this.phase === 'playing') {
+          sub.fire--;
+          const cx = sub.x + sub.w / 2;
+          if (sub.fire <= 0 && Math.abs(this.boatX - cx) < SUB_FIRE_RANGE && this.mines.length < 4) {
+            this.mines.push({ x: cx, y: sub.y });
+            sub.fire = 42;
+          }
         }
+        continue;
+      }
+      sub.x += sub.vx; // cruising left
+      if (sub.x <= 6) {
+        // Reached the left edge — it "gets away" and surfaces to a firing spot
+        // somewhere along the surface (no wrapping back across).
+        sub.surfaced = true;
+        sub.vx = 0;
+        sub.x = 70 + Math.random() * (W - 220);
+        sub.y = SUB_SURFACE_Y;
+        sub.fire = 28 + Math.random() * 24;
       }
     }
   }
@@ -402,10 +419,8 @@ class Game {
 
   drawSub(sub: Sub) {
     const c = this.ctx, s = this.s;
-    const right = sub.vx > 0;
-    const img = sub.variant
-      ? (right ? s.sub2_r : s.sub2_l)
-      : (right ? s.sub_l : s.sub_r);
+    // Surfaced subs use the dive/surface pose; cruising subs only move left.
+    const img = sub.surfaced ? s.sub_dive : (sub.variant ? s.sub2_l : s.sub_r);
     c.drawImage(img, Math.round(sub.x), py(Math.round(sub.y)));
   }
 
