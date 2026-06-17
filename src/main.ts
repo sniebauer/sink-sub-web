@@ -107,10 +107,11 @@ class Game {
     this.phase = 'playing';
     this.phaseT = 0;
     this.needStart = false;
+    play('levelStart'); // the "go" cue, fired here so it doesn't stack with levelClear
   }
 
   startLevel() {
-    this.bombsMax = 2 + this.level;
+    this.bombsMax = Math.min(2 + this.level, 6);
     this.bombs = [];
     this.mines = [];
     this.booms = [];
@@ -122,7 +123,6 @@ class Game {
     this.phaseT = 0;
     this.needStart = false; // level changes/respawns auto-advance after a beat
     reportTitle(`Level ${this.level}`);
-    play('levelStart');
   }
 
   spawnSubs() {
@@ -166,7 +166,7 @@ class Game {
     // Any gameplay key begins a waiting (fresh/ready) game.
     const GAME_KEYS = ['ArrowLeft', 'ArrowRight', 'ArrowDown', 'KeyA', 'KeyD',
       'KeyZ', 'KeyX', 'Comma', 'Period', 'Numpad1', 'Numpad3', 'Space', 'Enter', 'KeyN'];
-    if (this.phase === 'ready' && GAME_KEYS.includes(code)) this.beginPlay();
+    if (this.phase === 'ready' && GAME_KEYS.includes(code)) { this.beginPlay(); return; }
     switch (code) {
       case 'ArrowLeft': case 'KeyA': this.left = true; break;
       case 'ArrowRight': case 'KeyD': this.right = true; break;
@@ -202,7 +202,7 @@ class Game {
 
   // --- update (one 50ms tick) -------------------------------------------
   update() {
-    if (this.paused || this.overlay) return;
+    if (this.paused || this.overlay || this.openMenu) return;
     this.phaseT++;
     for (const b of this.booms) b.t++;
     this.booms = this.booms.filter((b) => b.t < b.life);
@@ -233,7 +233,9 @@ class Game {
     this.moveSubs();
     this.moveBombs();
     this.moveMines();
-    if (this.subs.length === 0) { play('levelClear'); this.level++; this.startLevel(); }
+    // Re-check phase: moveMines() may have flipped us to 'dying' this same tick
+    // (a mine killed the boat as the last sub died) — don't clobber that.
+    if (this.phase === 'playing' && this.subs.length === 0) { play('levelClear'); this.level++; this.startLevel(); }
   }
 
   // After losing a life: same level again (the original restarts the level).
@@ -304,15 +306,22 @@ class Game {
     pts = Math.max(100, Math.min(3000, Math.round(pts / 100) * 100));
     this.score += pts;
     play('explosion');
-    if (this.score >= this.nextLife) { this.lives++; this.nextLife += 25000; play('extraLife'); }
+    while (this.score >= this.nextLife) {
+      if (this.lives < 9) this.lives++; // lives cap 9, per the original
+      this.nextLife += 25000;
+      play('extraLife');
+    }
     this.booms.push({ x: sub.x, y: sub.y - 4, t: 0, life: 8, kind: 'sub' });
     this.subs.splice(i, 1);
   }
 
   killBoat() {
+    if (this.phase !== 'playing') return; // idempotent: only one death per life
     this.lives--;
     this.phase = 'dying';
     this.phaseT = 0;
+    this.bombs = []; // clear in-flight ordnance so it doesn't freeze on screen
+    this.mines = [];
     this.booms.push({ x: this.boatX - 55, y: BOAT_PY, t: 0, life: 22, kind: 'boat' });
     play('explosion');
   }
@@ -549,7 +558,10 @@ async function main() {
     const [cx, cy] = toCanvas(e);
     if (cy >= BAR_H) steer(cx, true);
   });
-  canvas.addEventListener('pointerup', () => { game.left = false; game.right = false; });
+  const clearSteer = () => { game.left = false; game.right = false; };
+  canvas.addEventListener('pointerup', clearSteer);
+  canvas.addEventListener('pointercancel', clearSteer);
+  canvas.addEventListener('lostpointercapture', clearSteer);
 
   const hold = (id: string, on: () => void, off: () => void) => {
     const el = document.getElementById(id)!;
