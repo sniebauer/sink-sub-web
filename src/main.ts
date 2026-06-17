@@ -26,7 +26,19 @@ const MINE_VY = 2; // floatmines rise 2 px/tick (faster than bombs, per the manu
 const PLANE_VX = 2; // plane crosses at 2 px/tick
 const PING_TICKS = 100; // sonar ping every ~5s (100 ticks @ 20fps)
 const SUB_SURFACE_Y = 138; // depth a surfaced (firing) sub sits at
-const SUB_FIRE_RANGE = 72; // a surfaced sub fires when the boat is within this (px)
+const SUB_FIRE_RANGE = 55; // a surfaced sub fires point-blank within this (px), per the original (0x37)
+const MAX_SUBS_ON_SCREEN = 5;
+
+// Per-level table recovered verbatim from SINKSUB.EXE (FUNC_3a3f level setup):
+// [torpedoBudget, bombs, subsToClear, fireCooldown(ticks), farFireDivisor].
+// torpedoBudget caps the TOTAL floatmines the subs may fire that level.
+const LEVELS: readonly (readonly [number, number, number, number, number])[] = [
+  [1, 4, 4, 40, 100], [2, 4, 5, 38, 100], [3, 5, 6, 36, 100], [4, 5, 7, 34, 100], [5, 6, 8, 32, 100],
+  [8, 2, 1, 10, 20], [7, 7, 10, 30, 100], [7, 7, 12, 30, 100], [8, 8, 14, 30, 100], [8, 8, 16, 30, 100],
+  [9, 7, 18, 28, 100], [9, 7, 20, 26, 100], [10, 7, 20, 24, 100], [10, 7, 20, 22, 90], [10, 8, 25, 20, 80],
+  [10, 8, 30, 18, 70], [10, 8, 35, 16, 60], [10, 8, 40, 14, 50], [10, 8, 45, 12, 40], [10, 8, 50, 10, 30],
+];
+const levelData = (lvl: number) => LEVELS[Math.min(Math.max(lvl, 1), LEVELS.length) - 1];
 
 const py = (y: number) => BAR_H + y;
 
@@ -59,7 +71,14 @@ class Game {
   lives = 3;
   level = 1;
   nextLife = 25000;
-  bombsMax = 3;
+  bombsMax = 4;
+  // per-level state (from the recovered LEVELS table)
+  subsToClear = 4;
+  subsKilled = 0;
+  torpedoesLeft = 1;
+  fireCdBase = 40;
+  fireDiv = 100;
+  subSpawnT = 0;
   // boat: velocity in px/tick, persists until a key nudges it (no friction)
   boatX = W / 2;
   boatVel = 0;
@@ -113,36 +132,48 @@ class Game {
   }
 
   startLevel() {
-    this.bombsMax = Math.min(2 + this.level, 6);
+    const [torp, bombs, subs, cd, div] = levelData(this.level);
+    this.torpedoesLeft = torp;
+    this.bombsMax = bombs;
+    this.subsToClear = subs;
+    this.fireCdBase = cd;
+    this.fireDiv = div;
+    this.subsKilled = 0;
     this.bombs = [];
     this.mines = [];
     this.booms = [];
+    this.subs = [];
     this.boatX = W / 2;
     this.boatVel = 0;
     this.pingT = 0;
-    this.spawnSubs();
+    this.subSpawnT = 0;
+    // initial wave spread across the screen; the rest stream in from the right
+    for (let i = 0; i < Math.min(MAX_SUBS_ON_SCREEN, this.subsToClear); i++) this.spawnSub(false);
     this.phase = 'ready';
     this.phaseT = 0;
     this.needStart = false; // level changes/respawns auto-advance after a beat
     reportTitle(`Level ${this.level}`);
   }
 
-  spawnSubs() {
-    const n = Math.min(2 + this.level, 8);
-    this.subs = [];
-    for (let i = 0; i < n; i++) {
-      // All subs cruise LEFT; spread across the screen (a few enter from the
-      // right) so they reach the edge — and surface — at different times.
-      this.subs.push({
-        x: 70 + Math.random() * (W - 20),
-        y: 150 + Math.random() * (FLOOR - 175),
-        vx: -SUB_SPEED,
-        w: 64, h: 20,
-        variant: Math.random() < 0.5 ? 0 : 1,
-        fire: 0,
-        surfaced: false,
-      });
-    }
+  spawnSub(fromRight: boolean) {
+    this.subs.push({
+      x: fromRight ? W + 10 + Math.random() * 60 : 90 + Math.random() * (W - 220),
+      y: 150 + Math.random() * (FLOOR - 175),
+      vx: -SUB_SPEED,
+      w: 64, h: 20,
+      variant: Math.random() < 0.5 ? 0 : 1,
+      fire: 0,
+      surfaced: false,
+    });
+  }
+
+  // Stream subs in from the right until this level's quota is accounted for.
+  maybeSpawnSub() {
+    if (this.subs.length >= MAX_SUBS_ON_SCREEN) return;
+    if (this.subsKilled + this.subs.length >= this.subsToClear) return;
+    if (--this.subSpawnT > 0) return;
+    this.subSpawnT = 22 + Math.floor(Math.random() * 26);
+    this.spawnSub(true);
   }
 
   // --- input -------------------------------------------------------------
@@ -233,13 +264,16 @@ class Game {
 
     // playing
     if (++this.pingT >= PING_TICKS) { this.pingT = 0; play('ping'); }
+    this.maybeSpawnSub();
     this.moveBoat();
     this.moveSubs();
     this.moveBombs();
     this.moveMines();
-    // Re-check phase: moveMines() may have flipped us to 'dying' this same tick
-    // (a mine killed the boat as the last sub died) — don't clobber that.
-    if (this.phase === 'playing' && this.subs.length === 0) { play('levelClear'); this.level++; this.startLevel(); }
+    // Level clears once this level's quota of subs has been destroyed. Re-check
+    // phase: moveMines() may have flipped us to 'dying' this same tick.
+    if (this.phase === 'playing' && this.subsKilled >= this.subsToClear && this.subs.length === 0) {
+      play('levelClear'); this.level++; this.startLevel();
+    }
   }
 
   // After losing a life: same level again (the original restarts the level).
@@ -260,14 +294,19 @@ class Game {
   moveSubs() {
     for (const sub of this.subs) {
       if (sub.surfaced) {
-        // Stationary at the surface; fires a torpedo straight up at the boat
-        // when it passes overhead. Only surfaced subs fire.
+        // Surfaced subs fire torpedoes up at the boat — point-blank within 55px,
+        // else a rare far shot — but only while the level's torpedo budget lasts.
         if (this.phase === 'playing') {
-          sub.fire--;
-          const cx = sub.x + sub.w / 2;
-          if (sub.fire <= 0 && Math.abs(this.boatX - cx) < SUB_FIRE_RANGE && this.mines.length < 4) {
-            this.mines.push({ x: cx, y: sub.y });
-            sub.fire = 42;
+          if (sub.fire > 0) {
+            sub.fire--;
+          } else if (this.torpedoesLeft > 0 && this.mines.length < 4) {
+            const cx = sub.x + sub.w / 2;
+            const near = Math.abs(this.boatX - cx) < SUB_FIRE_RANGE;
+            if (near || Math.random() * this.fireDiv < 1) {
+              this.mines.push({ x: cx, y: sub.y });
+              this.torpedoesLeft--;
+              sub.fire = this.fireCdBase;
+            }
           }
         }
         continue;
@@ -275,12 +314,12 @@ class Game {
       sub.x += sub.vx; // cruising left
       if (sub.x <= 6) {
         // Reached the left edge — it "gets away" and surfaces to a firing spot
-        // somewhere along the surface (no wrapping back across).
+        // (still bombable, still counts toward the level quota).
         sub.surfaced = true;
         sub.vx = 0;
         sub.x = 70 + Math.random() * (W - 220);
         sub.y = SUB_SURFACE_Y;
-        sub.fire = 28 + Math.random() * 24;
+        sub.fire = this.fireCdBase;
       }
     }
   }
@@ -318,10 +357,10 @@ class Game {
 
   destroySub(i: number) {
     const sub = this.subs[i];
-    const depthFrac = (sub.y - 150) / (FLOOR - 175);
-    let pts = 100 + (0.65 * depthFrac + 0.35) * 2900;
-    pts = Math.max(100, Math.min(3000, Math.round(pts / 100) * 100));
-    this.score += pts;
+    // Original score: depth_factor (1..11 by depth) × sub speed × 100.
+    const depthFactor = Math.max(1, Math.min(11, Math.trunc(((sub.y - 100) / (FLOOR - 130)) * 10 + 1)));
+    this.score += depthFactor * SUB_SPEED * 100;
+    this.subsKilled++;
     play('explosion');
     while (this.score >= this.nextLife) {
       if (this.lives < 9) this.lives++; // lives cap 9, per the original
@@ -352,7 +391,8 @@ class Game {
       if (p.x < -70) this.plane = null;
     } else if (--this.planeTimer <= 0) {
       this.planeTimer = 260 + Math.floor(Math.random() * 260); // ~13–26s between flybys
-      this.plane = { x: W + 4, y: 6 + Math.random() * 48, frame: 0, animT: 0 };
+      // The "Register now!" nag plane only appears once ≥3 subs are cleared.
+      if (this.subsKilled >= 3) this.plane = { x: W + 4, y: 6 + Math.random() * 48, frame: 0, animT: 0 };
     }
   }
 
@@ -470,7 +510,7 @@ class Game {
       c.fillText(t, x, midY + 1); x += c.measureText(t).width + 5;
     };
     icon(s.boat, 13); num(this.lives);
-    icon(s.sub_l, 13); num(this.subs.length);
+    icon(s.sub_l, 13); num(Math.max(0, this.subsToClear - this.subsKilled));
     icon(s.icon_bomb, 12); num(this.bombsMax - this.bombs.length);
     lbl('Level'); num(this.level);
     lbl('Score'); num(this.score);
